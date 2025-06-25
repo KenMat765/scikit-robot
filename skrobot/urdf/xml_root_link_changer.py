@@ -246,7 +246,10 @@ class URDFXMLRootLinkChanger:
                     self.joint_tree[child_link]['joint'] = None
 
                     # Reverse the joint transformation if needed
-                    self._reverse_joint_transform(joint)
+                    joint_transform = self._reverse_joint_transform(joint)
+                    
+                    # Update the child link's visual/collision origins
+                    self._update_link_origins(child_link, joint_transform)
 
     def _reverse_joint_transform(self, joint):
         """Reverse the transformation of a joint.
@@ -255,9 +258,16 @@ class URDFXMLRootLinkChanger:
         ----------
         joint : ET.Element
             Joint XML element to reverse
+            
+        Returns
+        -------
+        original_transform : skrobot.coordinates.Coordinates
+            The original transformation before reversal (for updating link origins)
         """
         # Find the origin element
         origin = joint.find('origin')
+        original_transform = None
+        
         if origin is not None:
             # Get current xyz and rpy
             xyz_str = origin.get('xyz', '0 0 0')
@@ -269,13 +279,85 @@ class URDFXMLRootLinkChanger:
 
             yaw_pitch_roll = rpy[::-1]
             quaternion_wxyz = rpy2quaternion(yaw_pitch_roll)
-            transform = Coordinates(pos=xyz, rot=quaternion_wxyz).inverse_transformation()
-            xyz_reversed = transform.translation.tolist()
-            rpy_reversed = transform.rpy_angle()[0][::-1].tolist()
+            original_transform = Coordinates(pos=xyz, rot=quaternion_wxyz)
+            
+            # Calculate inverse transformation
+            inverse_transform = original_transform.inverse_transformation()
+            xyz_reversed = inverse_transform.translation.tolist()
+            rpy_reversed = inverse_transform.rpy_angle()[0][::-1].tolist()
 
             # Set the reversed values
             origin.set('xyz', ' '.join(map(str, xyz_reversed)))
             origin.set('rpy', ' '.join(map(str, rpy_reversed)))
+            
+        return original_transform
+
+    def _update_link_origins(self, link_name, joint_transform):
+        """Update visual and collision origins for a link whose coordinate frame changed.
+        
+        When a joint is reversed, the child link's coordinate frame changes.
+        The visual and collision origins need to be transformed by the inverse
+        of the original joint transformation to maintain correct geometry.
+        
+        Parameters
+        ----------
+        link_name : str
+            Name of the link to update
+        joint_transform : skrobot.coordinates.Coordinates
+            The original joint transformation before reversal
+        """
+        if joint_transform is None or link_name not in self.links:
+            return
+            
+        link = self.links[link_name]
+        inverse_transform = joint_transform.inverse_transformation()
+        
+        # Update visual origins
+        for visual in link.findall('visual'):
+            self._transform_origin_element(visual, inverse_transform)
+            
+        # Update collision origins  
+        for collision in link.findall('collision'):
+            self._transform_origin_element(collision, inverse_transform)
+    
+    def _transform_origin_element(self, element, transform):
+        """Transform an origin element by the given transformation.
+        
+        Parameters
+        ----------
+        element : ET.Element
+            Element containing origin (visual or collision)
+        transform : skrobot.coordinates.Coordinates
+            Transformation to apply
+        """
+        origin = element.find('origin')
+        if origin is None:
+            # Create origin element if it doesn't exist (default is identity)
+            origin = ET.SubElement(element, 'origin')
+            origin.set('xyz', '0 0 0')
+            origin.set('rpy', '0 0 0')
+        
+        # Get current origin transformation
+        xyz_str = origin.get('xyz', '0 0 0')
+        rpy_str = origin.get('rpy', '0 0 0')
+        
+        xyz = [float(x) for x in xyz_str.split()]
+        rpy = [float(x) for x in rpy_str.split()]
+        
+        # Create coordinates for current origin
+        yaw_pitch_roll = rpy[::-1]
+        quaternion_wxyz = rpy2quaternion(yaw_pitch_roll)
+        current_origin = Coordinates(pos=xyz, rot=quaternion_wxyz)
+        
+        # Apply the transformation
+        transformed_origin = transform.transform(current_origin)
+        
+        # Update the origin element
+        new_xyz = transformed_origin.translation.tolist()
+        new_rpy = transformed_origin.rpy_angle()[0][::-1].tolist()
+        
+        origin.set('xyz', ' '.join(map(str, new_xyz)))
+        origin.set('rpy', ' '.join(map(str, new_rpy)))
 
     def _save_urdf(self, output_path):
         """Save the modified URDF to a file.
