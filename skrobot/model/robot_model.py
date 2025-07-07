@@ -17,12 +17,12 @@ from skrobot.coordinates import convert_to_axis_vector
 from skrobot.coordinates import Coordinates
 from skrobot.coordinates import make_coords
 from skrobot.coordinates import make_matrix
-from skrobot.coordinates.math import jacobian_inverse
 from skrobot.coordinates import midcoords
 from skrobot.coordinates import midpoint
 from skrobot.coordinates import normalize_vector
 from skrobot.coordinates import orient_coords_to_axis
 from skrobot.coordinates import rpy_angle
+from skrobot.coordinates.math import jacobian_inverse
 from skrobot.model.joint import calc_dif_with_axis
 from skrobot.model.joint import calc_target_joint_dimension
 from skrobot.model.joint import calc_target_joint_dimension_from_link_list
@@ -33,11 +33,16 @@ from skrobot.model.joint import LinearJoint
 from skrobot.model.joint import RotationalJoint
 from skrobot.model.link import find_link_path
 from skrobot.model.link import Link
-from skrobot.utils.listify import listify
 from skrobot.utils import urdf
+from skrobot.utils.listify import listify
 from skrobot.utils.urdf import enable_mesh_cache
 from skrobot.utils.urdf import URDF
 
+
+try:
+    from skrobot.utils.visualization import auto_ik_hook
+except ImportError:
+    auto_ik_hook = None
 
 logger = getLogger(__name__)
 
@@ -604,6 +609,12 @@ class CascadedLink(CascadedCoords):
         are updated.
         """
         inverse_kinematics_hook = inverse_kinematics_hook or []
+
+        # Auto-inject visualization hooks from context
+        if auto_ik_hook is not None:
+            context_hooks = auto_ik_hook()
+            if context_hooks:
+                inverse_kinematics_hook = list(inverse_kinematics_hook) + context_hooks
         if move_target is None:
             raise NotImplementedError
         move_target = listify(move_target)
@@ -654,14 +665,10 @@ class CascadedLink(CascadedCoords):
                 == len(dif_pos)
                 == len(dif_rot)):
             logger.error(
-                'list length differ : translation-axis {} rotation-axis {} '
-                'move-target {} link-list {} dif-pos {} dif-rot {}'.format(
-                    len(translation_axis),
-                    len(rotation_axis),
-                    len(move_target),
-                    len(link_list),
-                    len(dif_pos),
-                    len(dif_rot)))
+                'list length differ : translation-axis %s rotation-axis %s '
+                'move-target %s link-list %s dif-pos %s dif-rot %s',
+                len(translation_axis), len(rotation_axis), len(move_target),
+                len(link_list), len(dif_pos), len(dif_rot))
             return 'ik-continuous'
 
         for i in range(len(rotation_axis)):
@@ -929,18 +936,17 @@ class CascadedLink(CascadedCoords):
                 == len(move_target)
                 == len(link_list)
                 == len(target_coords)):
-            logger.error('list length differ : translation_axis {}'
-                         ', rotation_axis {}, move_target {} '
-                         'link_list {}, target_coords {}'.format(
-                             len(translation_axis), len(rotation_axis),
-                             len(move_target), len(link_list),
-                             len(target_coords)))
+            logger.error('list length differ : translation_axis %s'
+                         ', rotation_axis %s, move_target %s '
+                         'link_list %s, target_coords %s',
+                         len(translation_axis), len(rotation_axis),
+                         len(move_target), len(link_list), len(target_coords))
             return False
 
         if len(additional_jacobi) != len(additional_vel):
-            logger.error('list length differ : additional_jacobi {}, '
-                         'additional_vel {}'.format(
-                             len(additional_jacobi), len(additional_vel)))
+            logger.error('list length differ : additional_jacobi %s, '
+                         'additional_vel %s',
+                         len(additional_jacobi), len(additional_vel))
             return False
 
         tmp_additional_jacobi = map(
@@ -1092,10 +1098,18 @@ class CascadedLink(CascadedCoords):
                                         rotation_axis=True,
                                         stop=100,
                                         dt=5e-3,
-                                        inverse_kinematics_hook=[],
+                                        inverse_kinematics_hook=None,
                                         thre=0.001,
                                         rthre=np.deg2rad(1.0),
                                         *args, **kwargs):
+
+        inverse_kinematics_hook = inverse_kinematics_hook or []
+
+        # Auto-inject visualization hooks from context
+        if auto_ik_hook is not None:
+            context_hooks = auto_ik_hook()
+            if context_hooks:
+                inverse_kinematics_hook = list(inverse_kinematics_hook) + context_hooks
 
         if not isinstance(target_coords, list):
             target_coords = [target_coords]
@@ -1110,12 +1124,10 @@ class CascadedLink(CascadedCoords):
                 == len(translation_axis)
                 == len(target_coords)):
             logger.error(
-                'list length differ : target_coords {} translation_axis {} \
-            rotation_axis {} move_target {}'. format(
-                    len(target_coords),
-                    len(translation_axis),
-                    len(rotation_axis),
-                    len(move_target)))
+                'list length differ : target_coords %s translation_axis %s '
+                'rotation_axis %s move_target %s',
+                len(target_coords), len(translation_axis),
+                len(rotation_axis), len(move_target))
 
         union_link_list = self.calc_union_link_list(link_list)
         for i in range(stop):
@@ -1189,7 +1201,7 @@ class CascadedLink(CascadedCoords):
                                *args, **kwargs):
         # argument check
         if jacobi is None and j_sharp is None:
-            logger.warn(
+            logger.warning(
                 'jacobi(j) or j_sharp(J#) is required '
                 'in calc_joint_angle_speed')
             return null_space
@@ -1827,8 +1839,7 @@ class RobotModel(CascadedLink):
                     robot_model.load_urdf_file(
                         file_obj=f, include_mimic_joints=include_mimic_joints)
             except Exception as e:
-                logger.error("Failed to load URDF from file: {}. Error: {}"
-                             .format(urdf_input, e))
+                logger.error("Failed to load URDF from file: %s. Error: %s", urdf_input, e)
                 logger.error("Attempting to load as URDF string instead.")
                 robot_model.load_urdf(
                     urdf_input, include_mimic_joints=include_mimic_joints)
@@ -1873,7 +1884,11 @@ class RobotModel(CascadedLink):
         with enable_mesh_cache():
             self.urdf_robot_model = URDF.load(file_obj=file_obj)
         self.name = self.urdf_robot_model.name
-        root_link = self.urdf_robot_model.base_link
+        if self.urdf_robot_model.base_link is None:
+            logger.error('URDF must have a base link defined.')
+            root_link = None
+        else:
+            root_link = self.urdf_robot_model.base_link
 
         links = []
         for urdf_link in self.urdf_robot_model.links:
@@ -1890,6 +1905,11 @@ class RobotModel(CascadedLink):
                              if j.mimic is not None}
 
         for j in self.urdf_robot_model.joints:
+            if j.parent not in link_maps or j.child not in link_maps:
+                logger.warning(
+                    'Joint %s has invalid parent or child link. '
+                    'Skipping this joint.', j.name)
+                continue
             if j.limit is None:
                 j.limit = urdf.JointLimit(0, 0)
             if j.axis is None:
@@ -1945,6 +1965,8 @@ class RobotModel(CascadedLink):
             link_maps[j.parent].add_child_link(link_maps[j.child])
 
         for j in self.urdf_robot_model.joints:
+            if j.parent not in link_maps or j.child not in link_maps:
+                continue
             if j.origin is None:
                 rpy = np.zeros(3, dtype=np.float32)
                 xyz = np.zeros(3, dtype=np.float32)
@@ -1958,6 +1980,47 @@ class RobotModel(CascadedLink):
                 pos=link_maps[j.child].translation,
                 rot=link_maps[j.child].rotation)
 
+        # Load mass properties from URDF
+        for urdf_link in self.urdf_robot_model.links:
+            link = link_maps[urdf_link.name]
+            if urdf_link.inertial is not None:
+                # Mass in kg (URDF stores in kg)
+                link.mass = urdf_link.inertial.mass
+
+                # Center of mass in meters (URDF stores in meters)
+                if urdf_link.inertial.origin is not None:
+                    link.centroid = urdf_link.inertial.origin[:3, 3]
+                else:
+                    link.centroid = np.zeros(3)
+
+                # Inertia tensor in kg*m^2 (URDF stores in kg*m^2)
+                inertia = urdf_link.inertial.inertia
+                if hasattr(inertia, 'ixx'):
+                    # Individual components
+                    link.inertia_tensor = np.array([
+                        [inertia.ixx, inertia.ixy, inertia.ixz],
+                        [inertia.ixy, inertia.iyy, inertia.iyz],
+                        [inertia.ixz, inertia.iyz, inertia.izz]
+                    ])
+                elif isinstance(inertia, np.ndarray) and inertia.shape == (3, 3):
+                    # Already a 3x3 matrix
+                    link.inertia_tensor = inertia
+                elif isinstance(inertia, np.ndarray) and inertia.shape == (6,):
+                    # Vector format [ixx, iyy, izz, ixy, ixz, iyz]
+                    link.inertia_tensor = np.array([
+                        [inertia[0], inertia[3], inertia[4]],
+                        [inertia[3], inertia[1], inertia[5]],
+                        [inertia[4], inertia[5], inertia[2]]
+                    ])
+                else:
+                    # Default fallback
+                    link.inertia_tensor = np.eye(3) * 0.001
+            else:
+                # Set default minimal mass properties if not specified in URDF
+                link.mass = 0.001  # 1 gram
+                link.centroid = np.zeros(3)
+                link.inertia_tensor = np.eye(3) * 1e-6  # Very small inertia
+
         # TODO(duplicate of __init__)
         self.link_list = links
         self.joint_list = joint_list
@@ -1970,8 +2033,11 @@ class RobotModel(CascadedLink):
             self.__dict__[link.name] = link
         for joint in whole_joint_list:
             self.__dict__[joint.name] = joint
-        self.root_link = self.__dict__[root_link.name]
-        self.assoc(self.root_link)
+        if root_link is None:
+            self.root_link = None
+        else:
+            self.root_link = self.__dict__[root_link.name]
+            self.assoc(self.root_link)
 
         # Add hook of mimic joint.
         for j in self.urdf_robot_model.joints:
@@ -2217,3 +2283,435 @@ class RobotModel(CascadedLink):
             [j.min_angle for j in joint_list],
             [j.max_angle for j in joint_list],
             joint_limit_eps=0.001)
+
+    def update_mass_properties(self):
+        """Update robot mass properties by summing over all links.
+
+        Returns
+        -------
+        dict
+            Dictionary containing total mass, center of mass, and inertia tensor.
+        """
+        total_mass = 0.0
+        total_moment = np.zeros(3)
+
+        for link in self.link_list:
+            if hasattr(link, 'mass') and link.mass > 0:
+                total_mass += link.mass
+                if link.centroid is not None:
+                    com_world = link.worldpos() + link.worldrot().dot(link.centroid)
+                else:
+                    com_world = link.worldpos()
+                total_moment += link.mass * com_world
+
+        if total_mass > 0:
+            total_centroid = total_moment / total_mass
+        else:
+            total_centroid = np.zeros(3)
+
+        # Calculate inertia tensor about total centroid
+        total_inertia = np.zeros((3, 3))
+        for link in self.link_list:
+            if hasattr(link, 'mass') and link.mass > 0:
+                if link.centroid is not None:
+                    com_world = link.worldpos() + link.worldrot().dot(link.centroid)
+                else:
+                    com_world = link.worldpos()
+
+                # Transform link inertia to world frame
+                R = link.worldrot()
+                link_inertia_world = R.dot(link.inertia_tensor).dot(R.T)
+
+                # Parallel axis theorem
+                r = com_world - total_centroid
+                r_cross = np.array([[0, -r[2], r[1]],
+                                   [r[2], 0, -r[0]],
+                                   [-r[1], r[0], 0]])
+                total_inertia += link_inertia_world - link.mass * r_cross.dot(r_cross)
+
+        return {
+            'total_mass': total_mass,
+            'total_centroid': total_centroid,
+            'total_inertia': total_inertia
+        }
+
+    def calc_av_vel_acc_from_pos(self, dt, av_prev=None, av_curr=None, av_next=None):
+        """Calculate joint velocities and accelerations from angle vectors.
+
+        Parameters
+        ----------
+        dt : float
+            Time step [s].
+        av_prev : np.ndarray, optional
+            Previous angle vector [rad]. If None, uses current angle vector.
+        av_curr : np.ndarray, optional
+            Current angle vector [rad]. If None, uses current angle vector.
+        av_next : np.ndarray, optional
+            Next angle vector [rad]. If None, assumes zero velocity.
+
+        Returns
+        -------
+        joint_velocities : np.ndarray
+            Joint velocities [rad/s] or [m/s] for linear joints.
+        joint_accelerations : np.ndarray
+            Joint accelerations [rad/s^2] or [m/s^2] for linear joints.
+        """
+        if av_curr is None:
+            av_curr = self.angle_vector()
+
+        if av_prev is None:
+            av_prev = av_curr.copy()
+
+        if av_next is None:
+            av_next = av_curr.copy()
+
+        # Calculate velocities using finite differences
+        joint_velocities = (av_next - av_prev) / (2.0 * dt)
+
+        # Calculate accelerations using finite differences
+        joint_accelerations = (av_next - 2.0 * av_curr + av_prev) / (dt * dt)
+
+        return joint_velocities, joint_accelerations
+
+    def forward_all_kinematics(self, joint_velocities=None, joint_accelerations=None,
+                               root_velocity=None, root_acceleration=None):
+        """Propagate velocities and accelerations through kinematic chain.
+
+        Parameters
+        ----------
+        joint_velocities : np.ndarray, optional
+            Joint velocities [rad/s] or [m/s]. If None, uses zeros.
+        joint_accelerations : np.ndarray, optional
+            Joint accelerations [rad/s^2] or [m/s^2]. If None, uses zeros.
+        root_velocity : np.ndarray, optional
+            Root link spatial velocity [m/s] + angular velocity [rad/s].
+        root_acceleration : np.ndarray, optional
+            Root link spatial acceleration [m/s^2] + angular acceleration [rad/s^2].
+        """
+        if joint_velocities is None:
+            joint_velocities = np.zeros(len(self.joint_list))
+        if joint_accelerations is None:
+            joint_accelerations = np.zeros(len(self.joint_list))
+        if root_velocity is None:
+            root_velocity = np.zeros(6)  # [linear_vel, angular_vel]
+        if root_acceleration is None:
+            root_acceleration = np.zeros(6)  # [linear_acc, angular_acc]
+
+        # Set root link velocities and accelerations
+        root_link = self.root_link
+        root_link.spatial_velocity = root_velocity[:3]
+        root_link.angular_velocity = root_velocity[3:]
+        root_link.spatial_acceleration = root_acceleration[:3]
+        root_link.angular_acceleration = root_acceleration[3:]
+
+        # Propagate through kinematic chain
+        joint_idx = 0
+        for joint in self.joint_list:
+            if joint is None:
+                continue
+
+            parent_link = joint.parent_link
+            child_link = joint.child_link
+
+            # Joint axis in world coordinates
+            joint_axis = parent_link.worldrot().dot(joint.axis)
+
+            # Propagate angular velocity
+            if joint.__class__.__name__ == 'LinearJoint':
+                child_link.angular_velocity = parent_link.angular_velocity.copy()
+            else:  # rotational joint
+                child_link.angular_velocity = (parent_link.angular_velocity +
+                                                joint_velocities[joint_idx] * joint_axis)
+
+            # Propagate spatial velocity
+            joint_pos = joint.parent_link.worldpos()
+            child_pos = child_link.worldpos()
+            r = child_pos - joint_pos
+
+            if joint.__class__.__name__ == 'LinearJoint':
+                child_link.spatial_velocity = (parent_link.spatial_velocity +
+                                                joint_velocities[joint_idx] * joint_axis +
+                                                np.cross(parent_link.angular_velocity, r))
+            else:  # rotational joint
+                child_link.spatial_velocity = (parent_link.spatial_velocity +
+                                                np.cross(parent_link.angular_velocity, r))
+
+            # Propagate angular acceleration
+            if joint.__class__.__name__ == 'LinearJoint':
+                child_link.angular_acceleration = parent_link.angular_acceleration.copy()
+            else:  # rotational joint
+                child_link.angular_acceleration = (parent_link.angular_acceleration +
+                                                   joint_accelerations[joint_idx] * joint_axis +
+                                                   np.cross(parent_link.angular_velocity,
+                                                            joint_velocities[joint_idx] * joint_axis))
+
+            # Propagate spatial acceleration
+            if joint.__class__.__name__ == 'LinearJoint':
+                child_link.spatial_acceleration = (parent_link.spatial_acceleration +
+                                                    joint_accelerations[joint_idx] * joint_axis +
+                                                    np.cross(parent_link.angular_acceleration, r) +
+                                                    np.cross(parent_link.angular_velocity,
+                                                             np.cross(parent_link.angular_velocity, r)))
+            else:  # rotational joint
+                child_link.spatial_acceleration = (parent_link.spatial_acceleration +
+                                                    np.cross(parent_link.angular_acceleration, r) +
+                                                    np.cross(parent_link.angular_velocity,
+                                                             np.cross(parent_link.angular_velocity, r)))
+
+            joint_idx += 1
+
+    def inverse_dynamics(self, external_forces=None, external_moments=None,
+                         external_coords=None, gravity=None):
+        """Compute joint torques using inverse dynamics (Newton-Euler algorithm).
+
+        Parameters
+        ----------
+        external_forces : list of np.ndarray, optional
+            External forces [N] applied at external_coords.
+        external_moments : list of np.ndarray, optional
+            External moments [Nm] applied at external_coords.
+        external_coords : list of coordinates, optional
+            Coordinate frames where external forces/moments are applied.
+        gravity : np.ndarray, optional
+            Gravity vector [m/s^2]. Defaults to [0, 0, -9.81].
+
+        Returns
+        -------
+        joint_torques : np.ndarray
+            Joint torques [Nm] or forces [N] for linear joints.
+        """
+        if gravity is None:
+            gravity = np.array([0, 0, -9.81])
+
+        # Clear previous external forces
+        for link in self.link_list:
+            link.clear_external_wrench()
+            link._internal_force.fill(0.0)
+            link._internal_moment.fill(0.0)
+
+        # Apply external forces and moments
+        if external_forces is not None and external_coords is not None:
+            for force, coords in zip(external_forces, external_coords):
+                if hasattr(coords, 'parent') and coords.parent in self.link_list:
+                    coords.parent.apply_external_wrench(force=force,
+                                                         point=coords.worldpos())
+
+        if external_moments is not None and external_coords is not None:
+            for moment, coords in zip(external_moments, external_coords):
+                if hasattr(coords, 'parent') and coords.parent in self.link_list:
+                    coords.parent.apply_external_wrench(moment=moment)
+
+        # Add gravity to all links
+        for link in self.link_list:
+            if hasattr(link, 'mass') and link.mass > 0:
+                gravity_force = link.mass * gravity
+                link.apply_external_wrench(force=gravity_force)
+
+        # Backward propagation: compute forces and moments from leaves to root
+        joint_torques = np.zeros(len(self.joint_list))
+
+        # First pass: compute forces and moments for each link
+        for link in self.link_list:
+            if hasattr(link, 'mass') and link.mass > 0:
+                # Get center of mass in world coordinates
+                if link.centroid is not None:
+                    com_world = link.worldpos() + link.worldrot().dot(link.centroid)
+                else:
+                    com_world = link.worldpos()
+
+                # Check if this is static case (no accelerations)
+                is_static = (np.allclose(link.spatial_acceleration, np.zeros(3)) and
+                             np.allclose(link.angular_acceleration, np.zeros(3)))
+
+                if is_static:
+                    # Static case: only external forces (gravity)
+                    link._internal_force = link.ext_force.copy()
+
+                    # Moment about link origin due to gravity at CoM
+                    r_com = com_world - link.worldpos()
+                    link._internal_moment = np.cross(r_com, link.ext_force) + link.ext_moment
+                else:
+                    # Dynamic case: include inertial forces
+                    # Linear momentum rate
+                    F_inertial = link.mass * link.spatial_acceleration
+
+                    # Angular momentum rate about center of mass
+                    R = link.worldrot()
+                    I_world = R.dot(link.inertia_tensor).dot(R.T)
+
+                    M_inertial = (I_world.dot(link.angular_acceleration) +
+                                  np.cross(link.angular_velocity,
+                                           I_world.dot(link.angular_velocity)))
+
+                    # Add moment due to linear acceleration of center of mass
+                    r_com = com_world - link.worldpos()
+                    M_inertial += np.cross(r_com, F_inertial)
+
+                    # Total force and moment
+                    link._internal_force = F_inertial + link.ext_force
+                    link._internal_moment = M_inertial + link.ext_moment
+            else:
+                link._internal_force = np.zeros(3)
+                link._internal_moment = np.zeros(3)
+
+        # Second pass: propagate forces from children to parents using kinematic tree
+        def propagate_forces_recursive(link):
+            """Recursively propagate forces from children to this link."""
+            # First, propagate forces from all children
+            for child_link in link.child_links:
+                propagate_forces_recursive(child_link)
+
+                # Add child's forces to this link
+                link._internal_force += child_link._internal_force
+
+                # Find the joint connecting this link to child
+                connecting_joint = None
+                for joint in self.joint_list:
+                    if joint.parent_link == link and joint.child_link == child_link:
+                        connecting_joint = joint
+                        break
+
+                # Use joint position for moment calculation if available
+                if connecting_joint:
+                    # The joint position is at the child link's origin in the default pose
+                    joint_pos = child_link.worldpos()
+                    r_child = joint_pos - link.worldpos()
+                else:
+                    # Fallback to link position
+                    r_child = child_link.worldpos() - link.worldpos()
+
+                link._internal_moment += (child_link._internal_moment +
+                                           np.cross(r_child, child_link._internal_force))
+
+        # Start propagation from root link
+        propagate_forces_recursive(self.root_link)
+
+        # Extract joint torques
+        joint_idx = 0
+        for joint in self.joint_list:
+            if joint is None:
+                continue
+
+            child_link = joint.child_link
+            # Get joint axis in world coordinates
+            # The axis is defined in the child link's local frame
+            joint_axis = child_link.worldrot().dot(joint.axis)
+
+            # Project force/moment onto joint axis
+            # Check if it's a linear joint by class type
+            if joint.__class__.__name__ == 'LinearJoint':
+                joint_torques[joint_idx] = np.dot(child_link._internal_force, joint_axis)
+            else:  # rotational joint
+                # For rotational joints, the torque is the moment about the joint axis
+                # The moment is already calculated about the correct point in propagate_forces_recursive
+                joint_torques[joint_idx] = np.dot(child_link._internal_moment, joint_axis)
+
+            joint_idx += 1
+
+        return joint_torques
+
+    def torque_vector(self, force_list=None, moment_list=None, target_coords=None,
+                      calc_statics_p=True, dt=0.005, av=None, av_prev=None, av_next=None,
+                      root_coords=None, root_coords_prev=None, root_coords_next=None,
+                      gravity=None):
+        """Calculate joint torques using inverse dynamics.
+
+        This method computes the joint torques required to achieve
+        specified motions while balancing external forces using inverse dynamics.
+
+        Parameters
+        ----------
+        force_list : list of np.ndarray, optional
+            External forces [N] applied at target_coords.
+        moment_list : list of np.ndarray, optional
+            External moments [Nm] applied at target_coords.
+        target_coords : list of coordinates, optional
+            Coordinate frames where forces/moments are applied.
+        calc_statics_p : bool, optional
+            If True, compute statics only. If False, compute full dynamics.
+            Defaults to True.
+        dt : float, optional
+            Time step for finite difference computation [s]. Defaults to 0.005.
+        av : np.ndarray, optional
+            Current joint angle vector [rad]. If None, uses current angles.
+        av_prev : np.ndarray, optional
+            Previous joint angle vector [rad]. For dynamics computation.
+        av_next : np.ndarray, optional
+            Next joint angle vector [rad]. For dynamics computation.
+        root_coords : coordinates, optional
+            Current root link coordinates. If None, uses current coordinates.
+        root_coords_prev : coordinates, optional
+            Previous root link coordinates. For dynamics computation.
+        root_coords_next : coordinates, optional
+            Next root link coordinates. For dynamics computation.
+        gravity : np.ndarray, optional
+            Gravity vector [m/s^2]. Defaults to [0, 0, -9.81].
+
+        Returns
+        -------
+        joint_torques : np.ndarray
+            Joint torques [Nm] or forces [N] for linear joints required to
+            achieve the specified motion and balance external forces.
+
+        Examples
+        --------
+        >>> # Compute static torques to balance gravity
+        >>> torques = robot.torque_vector()
+        >>>
+        >>> # Compute torques with external force on end effector
+        >>> force = np.array([10, 0, 0])  # 10N in x direction
+        >>> torques = robot.torque_vector(
+        ...     force_list=[force],
+        ...     target_coords=[robot.rarm.end_coords]
+        ... )
+        >>>
+        >>> # Compute dynamic torques for motion
+        >>> torques = robot.torque_vector(
+        ...     calc_statics_p=False,
+        ...     av_prev=prev_angles,
+        ...     av=curr_angles,
+        ...     av_next=next_angles,
+        ...     dt=0.01
+        ... )
+        """
+        if av is None:
+            av = self.angle_vector()
+
+        # Set joint angles
+        self.angle_vector(av)
+
+        # Initialize velocities and accelerations
+        joint_velocities = np.zeros(len(self.joint_list))
+        joint_accelerations = np.zeros(len(self.joint_list))
+        root_velocity = np.zeros(6)
+        root_acceleration = np.zeros(6)
+
+        # Compute velocities and accelerations for dynamics
+        if not calc_statics_p:
+            if av_prev is not None or av_next is not None:
+                joint_velocities, joint_accelerations = self.calc_av_vel_acc_from_pos(
+                    dt, av_prev, av, av_next)
+
+            # TODO: Add root coordinate velocity/acceleration computation
+            # if root_coords_prev is not None or root_coords_next is not None:
+            #     root_velocity, root_acceleration = self.calc_root_coords_vel_acc_from_pos(
+            #         dt, root_coords_prev, root_coords, root_coords_next)
+
+        # Propagate kinematics
+        self.forward_all_kinematics(joint_velocities, joint_accelerations,
+                                    root_velocity, root_acceleration)
+
+        # Handle gravity settings
+        if gravity is None:
+            # Default: downward gravity
+            gravity = np.array([0, 0, -9.80665])  # Downward gravity in m/s^2
+
+        # Compute inverse dynamics
+        joint_torques = self.inverse_dynamics(
+            external_forces=force_list,
+            external_moments=moment_list,
+            external_coords=target_coords,
+            gravity=gravity
+        )
+
+        return joint_torques

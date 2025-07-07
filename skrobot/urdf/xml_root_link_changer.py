@@ -3,6 +3,9 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+
 
 class URDFXMLRootLinkChanger:
     """A class to change the root link of a URDF by directly manipulating XML.
@@ -291,8 +294,8 @@ class URDFXMLRootLinkChanger:
 
     def _invert_yaw_pitch_roll(self, yaw, pitch, roll):
         """
-        Yaw-Pitch-Rollで表現された回転の逆変換を計算し、
-        ジンバルロックを考慮して再びYaw-Pitch-Rollで返します。
+        Calculate the inverse transformation of a rotation expressed in Yaw-Pitch-Roll,
+        and return it in Yaw-Pitch-Roll considering gimbal lock.
         """
         c_y, s_y = np.cos(yaw), np.sin(yaw)
         c_p, s_p = np.cos(pitch), np.sin(pitch)
@@ -301,12 +304,12 @@ class URDFXMLRootLinkChanger:
         Rz = np.array([[c_y, -s_y, 0], [s_y, c_y, 0], [0, 0, 1]])
         Ry = np.array([[c_p, 0, s_p], [0, 1, 0], [-s_p, 0, c_p]])
         Rx = np.array([[1, 0, 0], [0, c_r, -s_r], [0, s_r, c_r]])
-        R = Rz @ Ry @ Rx
+        R = np.dot(np.dot(Rz, Ry), Rx)
 
         R_inv = R.T
 
         sin_pitch_inv = -R_inv[2, 0]
-        
+
         epsilon = 1e-6
         if abs(sin_pitch_inv) >= 1.0 - epsilon:
             pitch_inv = np.pi / 2.0 if sin_pitch_inv > 0 else -np.pi / 2.0
@@ -320,7 +323,7 @@ class URDFXMLRootLinkChanger:
             cos_pitch_inv = np.cos(pitch_inv)
             yaw_inv = np.arctan2(R_inv[1, 0] / cos_pitch_inv, R_inv[0, 0] / cos_pitch_inv)
             roll_inv = np.arctan2(R_inv[2, 1] / cos_pitch_inv, R_inv[2, 2] / cos_pitch_inv)
-            
+
         return yaw_inv, pitch_inv, roll_inv
 
     # When the prev_joint_xyz and rpy is None, the child of this joint is the new root link
@@ -380,11 +383,12 @@ class URDFXMLRootLinkChanger:
                     # Get pose of child joint
                     base_link_child_xyz_str = base_link_child_origin.get('xyz', '0 0 0')
                     base_link_child_rpy_str = base_link_child_origin.get('rpy', '0 0 0')
-                    base_link_child_xyz = [float(x) for x in  base_link_child_xyz_str.split()]
-                    base_link_child_rpy = [float(x) for x in  base_link_child_rpy_str.split()]
+
+                    base_link_child_xyz = [float(x) for x in base_link_child_xyz_str.split()]
+                    base_link_child_rpy = [float(x) for x in base_link_child_rpy_str.split()]
                     base_link_child_pose = self._pose_to_matrix(base_link_child_xyz, base_link_child_rpy)
                     # Calculate and set new child pose
-                    new_base_link_child_pose = inv_current_pose @ base_link_child_pose
+                    new_base_link_child_pose = np.dot(inv_current_pose, base_link_child_pose)
                     new_base_link_child_xyz, new_base_link_child_rpy = self._matrix_to_pose(new_base_link_child_pose)
                     base_link_child_origin.set('xyz', ' '.join(map(str, new_base_link_child_xyz)))
                     base_link_child_origin.set('rpy', ' '.join(map(str, new_base_link_child_rpy)))
@@ -404,13 +408,13 @@ class URDFXMLRootLinkChanger:
                 child_pose = self._pose_to_matrix(child_xyz, child_rpy)
 
                 # Calculate new pose of child joint
-                new_child_pose = new_pose @ child_pose
+                new_child_pose = np.dot(new_pose, child_pose)
                 new_child_xyz, new_child_rpy = self._matrix_to_pose(new_child_pose)
 
                 # Set new pose to child joint
                 child_origin.set('xyz', ' '.join(map(str, new_child_xyz)))
                 child_origin.set('rpy', ' '.join(map(str, new_child_rpy)))
-    
+
     def _pose_to_matrix(self, xyz, rpy):
         rot = R.from_euler('xyz', rpy)
         T = np.eye(4)
@@ -423,7 +427,7 @@ class URDFXMLRootLinkChanger:
         rot = R.from_matrix(T[:3, :3])
         rpy = rot.as_euler('xyz')
         return xyz.tolist(), rpy.tolist()
-    
+
     def _get_all_children_links(self, parent_link):
         parent_link_name = parent_link.get('link')
         for link_name, info in self.joint_tree.items():
@@ -448,7 +452,7 @@ class URDFXMLRootLinkChanger:
             if parent_link_name == link_name:
                 children_joints.append(joint)
         return children_joints
-    
+
     def _link_is_included_in_path(self, target_link, path):
         target_link_name = target_link.get('name')
         for elem in path:
